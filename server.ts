@@ -193,6 +193,22 @@ function configureApp (app: ReturnType<typeof express>, seq: typeof sequelize) {
     }
   }))
 
+  /* Guardian AI: response headers from guardian/security-headers.json. Fix pull requests edit that file. */
+  const guardianHeaders: Record<string, string> = (() => {
+    try {
+      return JSON.parse(fs.readFileSync(path.resolve('guardian/security-headers.json'), 'utf8')).headers ?? {}
+    } catch {
+      return {}
+    }
+  })()
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    for (const [name, value] of Object.entries(guardianHeaders)) res.setHeader(name, value)
+    next()
+  })
+
+  /* Guardian AI demo seed: jQuery from this host, so a passive scan can see its version (CVE-2020-11023, CISA KEV) */
+  app.use('/vendor/jquery', express.static(path.resolve('node_modules/jquery/dist')))
+
   /* Hiring header */
   app.use((req: Request, res: Response, next: NextFunction) => {
     res.append('X-Recruiting', config.get('application.securityTxt.hiring'))

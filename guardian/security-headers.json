@@ -1,0 +1,4 @@
+{
+  "$comment": "Response headers the application sets on every response. Proposed changes come from Guardian AI as pull requests; edit freely.",
+  "headers": {}
+}

@@ -1,0 +1,69 @@
+# Copy to .github/workflows/guardian-deploy.yml in the Juice Shop fork.
+#
+# On every push to the deploy branch: build the image, push it to the scan target's registry,
+# point `:live` at it and restart the service. The job runs in the `production` GitHub
+# Environment, so GitHub records a deployment of this exact commit and marks it successful only
+# when the service is stable — that deployment is what Guardian waits for before it re-scans.
+#
+# Repository variables (Settings → Secrets and variables → Actions → Variables), from the
+# Twin-<env>-JuiceShop stack outputs:
+#   AWS_REGION            e.g. ap-southeast-2
+#   AWS_DEPLOY_ROLE_ARN   ForkDeployRoleArn
+#   ECR_REPOSITORY_URI    ForkImageRepository
+#   ECS_CLUSTER           ForkClusterName
+#   ECS_SERVICE           ForkServiceName
+# No secrets: AWS access is OIDC, and the role trusts only this repository's deploy branch.
+
+name: Deploy to the Guardian scan target
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+# One deploy at a time, in order: a later merge must not be overtaken by an earlier one.
+concurrency:
+  group: guardian-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push
+        env:
+          REPOSITORY: ${{ vars.ECR_REPOSITORY_URI }}
+          SHA: ${{ github.sha }}
+        run: |
+          docker build \
+            --build-arg VCS_REF="$SHA" \
+            --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t "$REPOSITORY:$SHA" .
+          docker push "$REPOSITORY:$SHA"
+          docker tag "$REPOSITORY:$SHA" "$REPOSITORY:live"
+          docker push "$REPOSITORY:live"
+
+      - name: Roll the service onto the new image
+        run: |
+          aws ecs update-service \
+            --cluster "${{ vars.ECS_CLUSTER }}" \
+            --service "${{ vars.ECS_SERVICE }}" \
+            --force-new-deployment > /dev/null
+          aws ecs wait services-stable \
+            --cluster "${{ vars.ECS_CLUSTER }}" \
+            --services "${{ vars.ECS_SERVICE }}"
